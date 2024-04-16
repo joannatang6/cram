@@ -696,7 +696,7 @@ buffer_nnonative_richness_glmer_poisson <- veg_hydro_2023 %>%
 #ranef_intercept <- ranef$condval
 #qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
 #qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
-buffer_nnonative_richness_glmer_poisson_tukey <- emmeans(biotic_nnonative_richness_glmer_poisson, pairwise ~ median_nonnative_richness, adjust = "tukey")
+buffer_nnonative_richness_glmer_poisson_tukey <- emmeans(buffer_nnonative_richness_glmer_poisson, pairwise ~ median_nonnative_richness, adjust = "tukey")
 
 
 
