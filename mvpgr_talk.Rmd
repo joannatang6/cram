@@ -1,0 +1,866 @@
+---
+title: "MVPGR Talk"
+author: "Joanna Tang"
+date: "2024-03-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load packages
+library(janitor)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(knitr)
+library(sjPlot)
+library(plotrix)
+library(glmmTMB)
+library(tidyverse)
+
+#Read in data
+cram_2023 <- read_csv("ecoatlas_wetlandcondition_2023.csv") %>% 
+  mutate(aa_time = paste(aaname, visitdate)) %>%  #make a column of AA and assessment date
+  filter(vpcategorydesc != "NA") %>% #remove data w/o natural/restored metadata
+  mutate(natural = case_when(vpcategorydesc == "natural" ~ "natural"))
+cram_2023$natural[is.na(cram_2023$natural)] <- "restored" #add column that categorizes AA as natural vs. restored
+veg_metadata_2023 <- read_csv("metadata2023.csv") %>% 
+  clean_names() %>% 
+  rename(parent_global_id = global_id) %>% 
+  mutate(unique_pool_id = paste(project_site, vernal_pool_name_or_number, sep = "")) %>% 
+    mutate(unique_pool_id = tolower(unique_pool_id))
+native_plants_2023 <- read_csv("native_plants_2023.csv") %>% 
+  clean_names() %>% 
+  rename(percent_cover = native_species_percent_cover) %>% 
+  rename(species = native_species) %>% 
+  mutate(native_status = "native")
+nonnative_plants_2023 <- read_csv("nonnative_plants_2023.csv") %>% 
+  clean_names() %>% 
+  rename(percent_cover = non_native_species_percent_cover) %>% 
+  rename(species = non_native_species) %>% 
+  mutate(native_status = "nonnative")
+hydro_2023 <- read_csv("hydro2023.csv") %>% 
+  clean_names() %>% 
+  mutate(unique_pool_id = paste(location, vernal_pool_name_or_id, sep = "")) %>% 
+  mutate(unique_pool_id = tolower(unique_pool_id))
+sb_vp_cram_2023 <- read_csv("sb_vp_cram_2023.csv") %>% 
+  clean_names()
+
+```
+
+# Comparing NorCal vs. SoCal, restored vs. natural vernal pools
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+# Comparing NorCal vs. SoCal, restored vs. natural vernal pools
+
+## Exploratory graphs
+buffer_hist <- ggplot(cram_2023) +
+  geom_histogram(aes(x = buffer_landscape_cont))
+#skewed left
+buffer_qq <- ggplot(cram_2023) +
+  geom_qq(aes(sample = buffer_landscape_cont))
+#skewed left
+hydro_hist <- ggplot(cram_2023) +
+  geom_histogram(aes(x = hydrology))
+#skewed left
+hydo_qq <- ggplot(cram_2023) +
+  geom_qq(aes(sample = hydrology))
+#skewed left
+physical_hist <- ggplot(cram_2023) +
+  geom_histogram(aes(x = physical_structure))
+#bimodal
+physical_qq <- ggplot(cram_2023) +
+  geom_qq(aes(sample = physical_structure))
+#bimodal
+biotic_hist <- ggplot(cram_2023) +
+  geom_histogram(aes(x = biotic_structure))
+#slightly skewed left
+biotic_qq <- ggplot(cram_2023) +
+  geom_qq(aes(sample = biotic_structure))
+#slightly skewed left
+score_hist <- ggplot(cram_2023) +
+  geom_histogram(aes(x = indexscore))
+#pretty normal...
+score_qq <- ggplot(cram_2023) +
+  geom_qq(aes(sample = indexscore))
+#pretty normal...
+
+## GLMER of overall score
+score_glmer_beta <- cram_2023 %>% 
+  glmmTMB(indexscore/100 ~ ecoregion*natural + (1|assessmentareaid) + (1|vyear), family = beta_family(), data = .)
+#summary(score_glmer_beta)
+#tab_model(score_glmer_beta, transform = NULL)
+#### Check diagnostic graphs
+#E1 <- resid(score_glmer_beta)
+#F1 <- fitted(score_glmer_beta)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((score_glmer_beta)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+score_glmer_beta_tukey <- emmeans(score_glmer_beta, pairwise ~ natural|ecoregion, adjust = "tukey")
+#central coast natural < restored p < 0.0001
+
+### Boxplots of overall score, by ecoregion
+score_box <- cram_2023 %>% 
+  ggplot(aes(x = ecoregion, y = indexscore), stat = "identity") +
+  geom_boxplot(aes(fill = natural, color = natural), width = .5) +
+  geom_jitter(aes(), alpha = 0.5) +
+  labs(title = "Overall CRAM score", x = "\n Ecoregion", y = "Overall CRAM Score", caption = "central coast natural < restored p < 0.0001") +
+  scale_y_continuous(expand = c(0,0), limits = c(50,100)) +
+  scale_x_discrete(labels=c('SF Bay/Delta', 'Central Coast', 'Modoc', 'Sacramento \n Valley', 'San Joaquin \n Valley', 'Sierra', 'South Coast')) +
+  scale_fill_manual(values = c("grey83", "grey53"), name = " ") +
+  scale_color_manual(values = c("black", "darkgoldenrod4"), name = " ") +
+  theme_classic(base_size = 17)
+score_box
+
+
+
+## GLMER of buffer/landscape score -- not good
+buffer_glmer_gamma <- cram_2023 %>% 
+  glmer(buffer_landscape_cont ~ ecoregion*natural + (1|projectname) + (1|aasize_ha) + (1|assessmentareaid) + (1|vyear), family = Gamma(link = "log"), data = .)
+#summary(buffer_glmer_gamma)
+#tab_model(buffer_glmer_gamma, transform = NULL)
+#### Check diagnostic graphs
+#E1 <- resid(buffer_glmer_gamma)
+#F1 <- fitted(buffer_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((buffer_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+buffer_glmer_gamma_tukey <- emmeans(buffer_glmer_gamma, pairwise ~ natural|ecoregion, adjust = "tukey")
+#natural: San Joaquin > Sac
+
+### Boxplots of buffer/landscape score, by ecoregion
+buffer_box <- cram_2023 %>% 
+  ggplot(aes(x = ecoregion, y = buffer_landscape_cont), stat = "identity") +
+  geom_boxplot(aes(fill = natural, color = natural), width = .4) +
+  geom_jitter(aes(), alpha = 0.5) +
+  labs(title = "Buffer/landcape score", x = "\n Ecoregion", y = "Buffer/Landscape Score", caption = "natural: San Joaquin > Sac") +
+  scale_y_continuous(expand = c(0,0), limits = c(40,100)) +
+  scale_x_discrete(labels=c('SF Bay/Delta', 'Central Coast', 'Modoc', 'Sacramento \n Valley', 'San Joaquin \n Valley', 'Sierra', 'South Coast')) +
+  scale_fill_manual(values = c("lavender", "mediumpurple"), name = " ") +
+  scale_color_manual(values = c("black", "darkgoldenrod4"), name = " ") +
+  theme_classic(base_size = 17)
+buffer_box
+
+
+
+## GLMER of hydro score -- not good
+hydro_glmer_gamma <- cram_2023 %>% 
+  glmer(hydrology ~ ecoregion*natural + (1|projectname) + (1|aasize_ha) + (1|assessmentareaid) + (1|vyear), family = Gamma(link = "log"), data = .)
+#summary(hydro_glmer_gamma)
+#tab_model(hydro_glmer_gamma, transform = NULL)
+#### Check diagnostic graphs
+#E1 <- resid(hydro_glmer_gamma)
+#F1 <- fitted(hydro_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((hydro_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+hydro_glmer_gamma_tukey <- emmeans(hydro_glmer_gamma, pairwise ~ ecoregion|natural, adjust = "tukey")
+#bay/delta natural > restored p = 0.0291
+
+### Boxplots of hydro score, by ecoregion
+hydro_box <- cram_2023 %>% 
+  ggplot(aes(x = ecoregion, y = hydrology), stat = "identity") +
+  geom_boxplot(aes(fill = natural, color = natural), width = .4) +
+  geom_jitter(aes(), alpha = 0.5) +
+  labs(title = "Hydrology score", x = "\n Ecoregion", y = "Hydrology Score", caption = "bay/delta natural > restored p = 0.0291") +
+  scale_y_continuous(expand = c(0,0), limits = c(50,100)) +
+  scale_fill_manual(values = c("lightskyblue2", "steelblue"), name = " ") +
+  scale_color_manual(values = c("black", "darkgoldenrod4"), name = " ") +
+  scale_x_discrete(labels=c('SF Bay/Delta', 'Central Coast', 'Modoc', 'Sacramento \n Valley', 'San Joaquin \n Valley', 'Sierra', 'South Coast')) +
+  theme_classic(base_size = 17)
+hydro_box
+
+
+
+## GLMER of physical structure score -- maybe not good
+physical_glmer_gamma <- cram_2023 %>% 
+  glmer(physical_structure ~ ecoregion*natural + (1|aasize_ha) + (1|assessmentareaid) + (1|vyear), family = Gamma(link = "log"), data = .)
+#summary(physical_glmer_gamma)
+#tab_model(physical_glmer_gamma, transform = NULL)
+#### Check diagnostic graphs
+#E1 <- resid(physical_glmer_gamma)
+#F1 <- fitted(physical_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#=qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((physical_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+physical_glmer_gamma_tukey <- emmeans(physical_glmer_gamma, pairwise ~ natural|ecoregion, adjust = "tukey")
+#central coast natural < restored p = 0.00028
+
+### Boxplots of physical structure score, by ecoregion
+physical_box <- cram_2023 %>% 
+  ggplot(aes(x = ecoregion, y = physical_structure), stat = "identity") +
+  geom_boxplot(aes(fill = natural, color = natural), width = .4) +
+  geom_jitter(aes(), alpha = 0.5) +
+  labs(title = "Physical structure score", x = "\n Ecoregion", y = "Physical Structure Score", caption = "central coast natural < restored p = 0.00028") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  scale_fill_manual(values = c("antiquewhite2", "navajowhite4"), name = " ") +
+  scale_color_manual(values = c("black", "darkgoldenrod4"), name = " ") +
+  scale_x_discrete(labels=c('SF Bay/Delta', 'Central Coast', 'Modoc', 'Sacramento \n Valley', 'San Joaquin \n Valley', 'Sierra', 'South Coast')) +
+  theme_classic(base_size = 17)
+physical_box
+
+
+
+## GLMER of biotic structure score -- not good
+biotic_glmer_gamma <- cram_2023 %>% 
+  glmer(biotic_structure ~ ecoregion*natural + (1|aasize_ha) + (1|assessmentareaid) + (1|vyear), family = Gamma(link = "log"), data = .)
+#summary(biotic_glmer_gamma)
+#tab_model(biotic_glmer_gamma, transform = NULL)
+#### Check diagnostic graphs
+#E1 <- resid(biotic_glmer_gamma)
+#F1 <- fitted(biotic_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((biotic_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+biotic_glmer_gamma_tukey <- emmeans(biotic_glmer_gamma, pairwise ~ natural|ecoregion, adjust = "tukey")
+#central coast natural < restored p < 0.0001
+#bay/delta natural > restored p = 0.0412
+#natural bay/delta > central coast p = 0.0341
+#natural central coast < sac p = 0.0008
+#restored bay/delta < central coast p = 0.0035
+#restored bay/delta < sac p = 0.0064
+
+### Boxplots of biotic structure score, by ecoregion
+biotic_box <- cram_2023 %>% 
+  ggplot(aes(x = ecoregion, y = biotic_structure), stat = "identity") +
+  geom_boxplot(aes(fill = natural, color = natural), width = .4) +
+  geom_jitter(aes(), alpha = 0.5) +
+labs(title = "Biotic structure score", x = "\n Ecoregion", y = "Biotic Structure Score", caption = "central coast natural < restored p < 0.0001 \n bay/delta natural > restored p = 0.0412 \n natural bay/delta > central coast p = 0.0341 \n natural central coast < sac p = 0.0008 \n restored bay/delta < central coast p = 0.0035 \n restored bay/delta < sac p = 0.0064") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  theme_classic(base_size = 17) +
+  scale_fill_manual(values = c("palegreen2", "green4"), name = " ") +
+  scale_color_manual(values = c("black", "darkgoldenrod4"), name = " ") +
+  scale_x_discrete(labels=c('SF Bay/Delta', 'Central Coast', 'Modoc', 'Sacramento \n Valley', 'San Joaquin \n Valley', 'Sierra', 'South Coast'))
+biotic_box
+
+```
+
+# Summary of SB pools
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+# Summary of SB pools
+
+## Exploratory graphs
+sb_buffer_hist <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_histogram(aes(x = buffer_landscape_cont))
+#skewed left
+sb_buffer_qq <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_qq(aes(sample = buffer_landscape_cont))
+#skewed left
+sb_hydro_hist <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_histogram(aes(x = hydrology))
+#skewed left
+sb_hydo_qq <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_qq(aes(sample = hydrology))
+#skewed left
+sb_physical_hist <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_histogram(aes(x = physical_structure))
+#normal
+sb_physical_qq <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_qq(aes(sample = physical_structure))
+#normal
+sb_biotic_hist <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_histogram(aes(x = biotic_structure))
+#slightly skewed left
+sb_biotic_qq <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_qq(aes(sample = biotic_structure))
+#slightly skewed left
+sb_score_hist <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_histogram(aes(x = indexscore))
+#pretty normal...
+sb_score_qq <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  ggplot() +
+  geom_qq(aes(sample = indexscore))
+#pretty normal...
+
+
+
+# Stacked bargraph of scores per pool
+sb_pool_col <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  pivot_longer(34:37, names_to = "score") %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(aaname, -indexscore), y = value, fill = score)) +
+  labs(title = "Scores", x = "Pool ID", y = "CRAM Scores", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,400)) +
+  theme_classic(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  scale_fill_manual(values = c("chartreuse3", "grey80", "blue", "burlywood3"), name = " CRAM Scores")
+sb_pool_col
+
+
+# Stacked bargraph of average scores per site
+sb_site_col <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  pivot_longer(34:37, names_to = "score") %>% 
+  group_by(assessmentareaid, score) %>% 
+  summarize(mean = mean(value)) %>% 
+  ggplot() +
+  geom_col(aes(x = assessmentareaid, y = mean, fill = score)) +
+  labs(title = "Mean Scores", x = "Site ID", y = "Mean Scores", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,400)) +
+  theme_classic(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  scale_fill_manual(values = c("chartreuse3", "grey80", "blue", "burlywood3"), name = " CRAM Scores")
+sb_site_col
+
+# Boxplots of buffer/landscape scores per site
+sb_site_buffer_box <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  pivot_longer(34:37, names_to = "score") %>% 
+  filter(score == "buffer_landscape_cont") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = assessmentareaid, y = value)) +
+  geom_jitter(aes(x = assessmentareaid, y = value)) +
+  labs(title = "Buffer/Lanscape Scores", x = "Site ID", y = "Buffer Scores", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  theme_classic(base_size = 20) +
+  theme(axis.text.x = element_text(angle = 90))
+sb_site_buffer_box
+
+
+# Boxplots of hydro scores per site
+sb_site_hydro_box <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  pivot_longer(34:37, names_to = "score") %>% 
+  filter(score == "hydrology") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = assessmentareaid, y = value)) +
+  geom_jitter(aes(x = assessmentareaid, y = value)) +
+  labs(title = "Hydrology Scores", x = "Site ID", y = "Hydrology Scores", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,110)) +
+  theme_classic(base_size = 20) +
+  theme(axis.text.x = element_text(angle = 90))
+sb_site_hydro_box
+
+
+# Boxplots of physical scores per site
+sb_site_physical_box <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  pivot_longer(34:37, names_to = "score") %>% 
+  filter(score == "physical_structure") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = assessmentareaid, y = value)) +
+  geom_jitter(aes(x = assessmentareaid, y = value)) +
+  labs(title = "Physical Structure Scores", x = "Site ID", y = "Physical Structure Scores", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  theme_classic(base_size = 20) +
+  theme(axis.text.x = element_text(angle = 90))
+sb_site_physical_box
+
+
+
+# Boxplots of biotic scores per site
+sb_site_biotic_box <- cram_2023 %>% 
+  filter(projectname == "SB Vernal Pool CRAM 2023") %>% 
+  pivot_longer(34:37, names_to = "score") %>% 
+  filter(score == "biotic_structure") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = assessmentareaid, y = value)) +
+  geom_jitter(aes(x = assessmentareaid, y = value)) +
+  labs(title = "Biotic Structure Scores", x = "Site ID", y = "Biotic Structure Scores", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  theme_classic(base_size = 20) +
+  theme(axis.text.x = element_text(angle = 90))
+sb_site_biotic_box
+
+```
+# Relating CRAM scores in SB pools to hydro, veg data
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+
+# Calculate inundation period, max water depth
+hydro_summary_2023 <- hydro_2023 %>% 
+  filter(water_level_in > 0) %>% #take out measurements of 0 water level
+  separate(date, c("date", "time"), sep = " ") %>% 
+  mutate(julian_day = yday(as.Date(date, "%m/%d/%Y"))) %>% 
+  mutate(inundation_length = julian_day-9+7) %>% #first storm was Jan 9, then add on 7 days after last monitoring date w/ water
+  group_by(unique_pool_id) %>% 
+  summarize(inundation_period = max(inundation_length),
+            max_depth_cm = max(water_level_in*2.54))
+
+# Combine veg data with hydro data and CRAM data
+veg_hydro_2023 <- veg_metadata_2023 %>% 
+  group_by(project_site, unique_pool_id) %>% 
+  summarize(median_native_pc = median(sum_of_native_cover),
+            median_native_richness = median(count_of_native_species),
+            median_nonnative_pc = median(sum_of_non_native_cover),
+            median_nonnative_richness = median(count_of_non_native_species)) %>% 
+  full_join(hydro_summary_2023) %>% 
+  full_join(sb_vp_cram_2023)
+
+## Exploratory graphs
+hydro_hist <- hydro_summary_2023 %>% 
+  ggplot() +
+  geom_histogram(aes(x = inundation_period))
+#bimodal
+hydro_qq <- hydro_summary_2023 %>% 
+  ggplot() +
+  geom_qq(aes(sample = inundation_period))
+#bimodal
+native_pc_hist <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_histogram((aes(x = sum_of_native_cover)))
+#bimodal
+native_pc_qq <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_qq(aes(sample = sum_of_native_cover))
+#bimodal
+native_richness_hist <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_histogram((aes(x = count_of_native_species)))
+#slightly skewed right
+native_richness_qq <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_qq(aes(sample = count_of_native_species))
+#slightly skewed right
+nonnative_pc_hist <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_histogram((aes(x = sum_of_non_native_cover)))
+#skewed right
+nonnative_pc_qq <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_qq(aes(sample = sum_of_non_native_cover))
+#skewed right
+nonnative_richness_hist <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_histogram((aes(x = count_of_non_native_species)))
+#slightly skewed right
+nonnative_richness_qq <- veg_metadata_2023 %>% 
+  ggplot() +
+  geom_qq(aes(sample = count_of_non_native_species))
+#slightly skewed right
+
+
+
+## GLM of biotic structure, by native pc
+biotic_native_pc_glm_gamma <- veg_hydro_2023 %>% 
+  glm(attribute_4_final_score ~ median_native_pc + location_aa_id, family = Gamma(link = "log"), data = .)
+#summary(biotic_native_pc_glm_gamma)
+#tab_model(biotic_native_pc_glm_gamma, transform = NULL)
+#p = 0.001
+#### Check diagnostic graphs
+#E1 <- resid(biotic_native_pc_glm_gamma)
+#F1 <- fitted(biotic_native_pc_glm_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((biotic_native_pc_glm_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+biotic_native_pc_glm_gamma_tukey <- emmeans(biotic_native_pc_glm_gamma, ~ median_native_pc, adjust = "tukey")
+
+
+
+
+## Scatterplot of native pc vs. biotic structure
+native_pc_biotic_pred <- ggeffects::ggpredict(biotic_native_pc_glm_gamma, terms = ~median_native_pc) %>% 
+  as.data.frame() %>% 
+    mutate(se = std.error(predicted))
+native_pc_biotic_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_ribbon(aes(x = x, y = predicted, ymin = predicted-se, ymax = predicted+se), fill = "lightgreen", alpha = 0.8, native_pc_biotic_pred) +
+  geom_smooth(aes(x = x, y = predicted,), color = "darkgreen", native_pc_biotic_pred) +
+  geom_point(aes(x = attribute_4_final_score, y = median_native_pc), color = "darkgreen", size = 2) +
+  labs(title = "Biotic Structure Scores", x = "Biotic Structure Score", y = "Native Species Percent Cover", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,175)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+native_pc_biotic_scatter
+
+
+## GLM of biotic structure, by native richness
+biotic_native_richness_glm_poisson <- veg_hydro_2023 %>% 
+  glm(attribute_4_final_score ~ median_native_richness + location_aa_id, family = "poisson", data = .)
+#summary(biotic_native_richness_glm_poisson)
+#tab_model(biotic_native_richness_glm_poisson, transform = NULL)
+#p < 0.001
+#### Check diagnostic graphs
+#E1 <- resid(biotic_native_richness_glm_poisson)
+#F1 <- fitted(biotic_native_richness_glm_poisson)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((biotic_native_richness_glm_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+biotic_native_richness_glm_poisson_tukey <- emmeans(biotic_native_richness_glm_poisson, ~ median_native_richness, adjust = "tukey")
+
+## Scatterplot of native richness vs. biotic structure
+native_richness_biotic_pred <- ggeffects::ggpredict(biotic_native_richness_glm_poisson, terms = ~median_native_richness) %>% 
+  as.data.frame() %>% 
+    mutate(se = std.error(predicted))
+native_richness_biotic_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_smooth(aes(x = x, y = predicted,), color = "darkgreen", native_richness_biotic_pred) +
+  geom_ribbon(aes(x = x, y = predicted, ymin = predicted-se, ymax = predicted+se), fill = "lightgreen", alpha = 0.6, native_richness_biotic_pred) +
+  geom_point(aes(x = attribute_4_final_score, y = median_native_richness), color = "darkgreen", size = 2) +
+  labs(title = "Biotic Structure Scores", x = "Biotic Structure Score", y = "Native Species Richness", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,8)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+native_richness_biotic_scatter
+
+
+## GLM of biotic structure, by nonnative pc
+biotic_nonnative_pc_glm_gamma <- veg_hydro_2023 %>% 
+  glm(attribute_4_final_score ~ median_nonnative_pc + location_aa_id, family = Gamma(link = "log"), data = .)
+#summary(biotic_nonnative_pc_glm_gamma)
+#tab_model(biotic_nonnative_pc_glm_gamma, transform = NULL)
+#p < 0.001
+#### Check diagnostic graphs
+#E1 <- resid(biotic_nonnative_pc_glm_gamma)
+#F1 <- fitted(biotic_nonnative_pc_glm_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((biotic_nonnative_pc_glm_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+biotic_nonnative_pc_glm_gamma_tukey <- emmeans(biotic_nonnative_pc_glm_gamma,  ~ median_nonnative_pc, adjust = "tukey")
+
+## Scatterplot of nonnative pc vs. biotic structure
+nonnative_pc_biotic_pred <- ggeffects::ggpredict(biotic_nonnative_pc_glm_gamma, terms = ~median_nonnative_pc) %>% 
+  as.data.frame() %>% 
+    mutate(se = std.error(predicted))
+nonnative_pc_biotic_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_ribbon(aes(x = x, y = predicted, ymin = predicted-se, ymax = predicted+se), fill = "peachpuff", alpha = 0.6, nonnative_pc_biotic_pred) +
+  geom_smooth(aes(x = x, y = predicted,), color = "orange3", nonnative_pc_biotic_pred) +
+  geom_point(aes(x = attribute_4_final_score, y = median_nonnative_pc), color = "orange3", size = 2) +
+    labs(title = "Biotic Structure Scores", x = "Biotic Structure Score", y = "Exotic Species Percent Cover", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,105)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+nonnative_pc_biotic_scatter
+
+
+## GLM of biotic structure, by nonnative richness
+biotic_nonnative_richness_glm_poisson <- veg_hydro_2023 %>% 
+  glm(attribute_4_final_score ~ median_nonnative_richness + location_aa_id, family = "poisson", data = .)
+#summary(biotic_nonnative_richness_glm_poisson)
+#tab_model(biotic_nonnative_richness_glm_poisson, transform = NULL)
+#p = 0.001
+#### Check diagnostic graphs
+#E1 <- resid(biotic_nonnative_richness_glm_poisson)
+#F1 <- fitted(biotic_nonnative_richness_glm_poisson)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((biotic_nonnative_richness_glm_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+biotic_nonnative_richness_glm_poisson_tukey <- emmeans(biotic_nonnative_richness_glm_poisson, ~ median_nonnative_richness, adjust = "tukey")
+
+## Scatterplot of nonnative richness vs. biotic structure
+nonnative_richness_biotic_pred <- ggeffects::ggpredict(biotic_nonnative_richness_glm_poisson, terms = ~median_nonnative_richness) %>% 
+  as.data.frame() %>% 
+    mutate(se = std.error(predicted))
+nonnative_richness_biotic_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_ribbon(aes(x = x, y = predicted, ymin = predicted-se, ymax = predicted+se), fill = "peachpuff", alpha = 0.6, nonnative_richness_biotic_pred) +
+  geom_smooth(aes(x = x, y = predicted,), color = "orange3", nonnative_richness_biotic_pred) +    geom_point(aes(x = attribute_4_final_score, y = median_nonnative_richness), color = "orange3", size = 3) +
+    labs(title = "Biotic Structure Scores", x = "Biotic Structure Score", y = "Nonnative Species Richness", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,8.5)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+nonnative_richness_biotic_scatter
+
+
+
+
+## GLMER of buffer, by native pc
+buffer_native_pc_glmer_gamma <- veg_hydro_2023 %>% 
+  glmer(attribute_1_final_score ~ median_native_pc + (1|location_aa_id), family = Gamma(link = "log"), data = .)
+#summary(buffer_native_pc_glmer_gamma)
+#tab_model(buffer_native_pc_glmer_gamma, transform = NULL)
+#not sig
+#### Check diagnostic graphs
+#E1 <- resid(buffer_native_pc_glmer_gamma)
+#F1 <- fitted(buffer_native_pc_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((buffer_native_pc_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+buffer_native_pc_glmer_gamma_tukey <- emmeans(buffer_native_pc_glmer_gamma, pairwise ~ median_native_pc, adjust = "tukey")
+
+## GLMER of buffer, by native richness
+buffer_native_richness_glmer_poisson <- veg_hydro_2023 %>% 
+  glmer(attribute_1_final_score ~ median_native_richness + (1|location_aa_id), family = "poisson", data = .)
+#summary(buffer_native_richness_glmer_poisson)
+#tab_model(buffer_native_richness_glmer_poisson, transform = NULL)
+#not sig
+#### Check diagnostic graphs
+#E1 <- resid(buffer_native_richness_glmer_poisson)
+#F1 <- fitted(buffer_native_richness_glmer_poisson)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((buffer_native_richness_glmer_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+buffer_native_richness_glmer_poisson_tukey <- emmeans(buffer_native_richness_glmer_poisson, pairwise ~ median_native_richness, adjust = "tukey")
+
+## GLMER of buffer, by nonnative pc
+buffer_nonnative_pc_glmer_gamma <- veg_hydro_2023 %>% 
+  glmer(attribute_1_final_score ~ median_nonnative_pc + (1|location_aa_id), family = Gamma(link = "log"), data = .)
+#summary(buffer_nonnative_pc_glmer_gamma)
+#tab_model(buffer_nonnative_pc_glmer_gamma, transform = NULL)
+#not sig
+#### Check diagnostic graphs
+#E1 <- resid(buffer_nonnative_pc_glmer_gamma)
+#F1 <- fitted(buffer_nonnative_pc_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((buffer_nonnative_pc_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+buffer_nonnative_pc_glmer_gamma_tukey <- emmeans(buffer_nonnative_pc_glmer_gamma, pairwise ~ median_nonnative_pc, adjust = "tukey")
+
+## GLMER of butter, by nonnative richness
+buffer_nnonative_richness_glmer_poisson <- veg_hydro_2023 %>% 
+  glmer(attribute_1_final_score ~ median_nonnative_richness + (1|location_aa_id), family = "poisson", data = .)
+#summary(buffer_nnonative_richness_glmer_poisson)
+#tab_model(buffer_nnonative_richness_glmer_poisson, transform = NULL)
+#not sig
+#### Check diagnostic graphs
+#E1 <- resid(buffer_nnonative_richness_glmer_poisson)
+#F1 <- fitted(buffer_nnonative_richness_glmer_poisson)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((buffer_nnonative_richness_glmer_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+buffer_nnonative_richness_glmer_poisson_tukey <- emmeans(biotic_nnonative_richness_glmer_poisson, pairwise ~ median_nonnative_richness, adjust = "tukey")
+
+
+
+
+
+
+## GLMER of overall score, by native pc
+score_native_pc_glmer_gamma <- veg_hydro_2023 %>% 
+  glmer(overall_aa_score ~ median_native_pc + (1|location_aa_id), family = Gamma(link = "log"), data = .)
+#summary(score_native_pc_glmer_gamma)
+#tab_model(score_native_pc_glmer_gamma, transform = NULL)
+#p = 0.001
+#### Check diagnostic graphs
+#E1 <- resid(score_native_pc_glmer_gamma)
+#F1 <- fitted(score_native_pc_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((score_native_pc_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+score_native_pc_glmer_gamma_tukey <- emmeans(score_native_pc_glmer_gamma, pairwise ~ median_native_pc, adjust = "tukey")
+
+
+
+
+## Scatterplot of native pc vs. overall score
+native_pc_score_pred <- ggeffects::ggpredict(score_native_pc_glmer_gamma, terms = ~median_native_pc) %>% 
+  as.data.frame() %>% 
+    mutate(se = std.error(predicted))
+native_pc_score_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_smooth(aes(x = overall_aa_score, y = median_native_pc), method = "lm", color = "darkgreen", fill = "lightgreen") +
+    geom_point(aes(x = attribute_4_final_score, y = median_native_pc), color = "darkgreen", size = 3) +
+  labs(title = "Overall Scores", x = "Overall CRAM Score", y = "Native Species Percent Cover", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,175)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+native_pc_score_scatter
+
+
+## GLMER of overall score, by native richness
+score_native_richness_glmer_poisson <- veg_hydro_2023 %>% 
+  glmer(overall_aa_score ~ median_native_richness + (1|location_aa_id), family = "poisson", data = .)
+#summary(score_native_richness_glmer_poisson)
+#tab_model(score_native_richness_glmer_poisson, transform = NULL)
+#p = 0.037
+#### Check diagnostic graphs
+#E1 <- resid(score_native_richness_glmer_poisson)
+#F1 <- fitted(score_native_richness_glmer_poisson)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((score_native_richness_glmer_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+score_native_richness_glmer_poisson_tukey <- emmeans(score_native_richness_glmer_poisson, pairwise ~ median_native_richness, adjust = "tukey")
+
+## Scatterplot of native richness vs. overall score
+native_richness_score_pred <- ggeffects::ggpredict(score_native_richness_glmer_poisson, terms = ~median_native_richness) %>% 
+  as.data.frame() %>% 
+    mutate(se = std.error(predicted))
+native_richness_score_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_smooth(aes(x = overall_aa_score, y = median_native_richness), method = "lm", color = "darkgreen", fill = "lightgreen") +
+    geom_point(aes(x = overall_aa_score, y = median_native_richness), color = "darkgreen", size = 3) +
+  labs(title = "Overall Score", x = "Overall CRAM Score", y = "Native Species Richness", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,8)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+native_richness_score_scatter
+
+
+## GLMER of overall score, by nonnative pc
+score_nonnative_pc_glmer_gamma <- veg_hydro_2023 %>% 
+  glmer(overall_aa_score ~ median_nonnative_pc + (1|location_aa_id), family = Gamma(link = "log"), data = .)
+#summary(score_nonnative_pc_glmer_gamma)
+#tab_model(score_nonnative_pc_glmer_gamma, transform = NULL)
+#p < 0.001
+#### Check diagnostic graphs
+#E1 <- resid(score_nonnative_pc_glmer_gamma)
+#F1 <- fitted(score_nonnative_pc_glmer_gamma)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((score_nonnative_pc_glmer_gamma)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+score_nonnative_pc_glmer_gamma_tukey <- emmeans(score_nonnative_pc_glmer_gamma, pairwise ~ median_nonnative_pc, adjust = "tukey")
+
+## Scatterplot of nonnative pc vs. overall score
+nonnative_pc_score_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_smooth(aes(x = overall_aa_score, y = median_nonnative_pc), method = "lm", color = "orange3", fill = "peachpuff") +
+    geom_point(aes(x = overall_aa_score, y = median_nonnative_pc), color = "orange3", size = 3) +
+    labs(title = "Overall Score", x = "Overall CRAM Score", y = "Nonnative Species Percent Cover", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,105)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+nonnative_pc_score_scatter
+
+
+## GLMER of overall score, by nonnative richness
+score_nnonative_richness_glmer_poisson <- veg_hydro_2023 %>% 
+  glmer(overall_aa_score ~ median_nonnative_richness + (1|location_aa_id), family = "poisson", data = .)
+#summary(score_nnonative_richness_glmer_poisson)
+#tab_model(score_nnonative_richness_glmer_poisson, transform = NULL)
+#p = 0.416
+#### Check diagnostic graphs
+#E1 <- resid(score_nnonative_richness_glmer_poisson)
+#F1 <- fitted(score_nnonative_richness_glmer_poisson)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#]qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((score_nnonative_richness_glmer_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+score_nnonative_richness_glmer_poisson_tukey <- emmeans(score_nnonative_richness_glmer_poisson, pairwise ~ median_nonnative_richness, adjust = "tukey")
+
+## Scatterplot of nonnative richness vs. overall score
+nonnative_richness_score_scatter <- veg_hydro_2023 %>% 
+  ggplot() +
+  geom_smooth(aes(x = overall_aa_score, y = median_nonnative_richness), method = "lm", color = "orange3", fill = "peachpuff") +
+    geom_point(aes(x = overall_aa_score, y = median_nonnative_richness), color = "orange3", size = 3) +
+    labs(title = "Overall Score", x = "Overall CRAM Score", y = "Nonnative Species Richness", caption = "") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,8.5)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,105)) +
+  theme_classic(base_size = 20)
+nonnative_richness_score_scatter
+
+
+
+
+
+## GLM of hydro score, by inundation period
+hydro_inundation_glm <- veg_hydro_2023 %>% 
+  glm(attribute_2_final_score ~ inundation_period + location_aa_id, data = .)
+#summary(hydro_inundation_glm)
+#tab_model(hydro_inundation_glm, transform = NULL)
+#not sig
+#### Check diagnostic graphs
+#E1 <- resid(hydro_inundation_glm)
+#F1 <- fitted(hydro_inundation_glm)
+#plot(x=F1, y=E1, xlab="Fitted Model Values", ylab="Pearson Residuals", main="Variance") #run 2 lines together -- assessing homoskedasticity -- you want to see no pattern
+#abline(h=0)
+#qqnorm(E1, ylab="Pearson Residuals")
+#qqline(E1) #run 2 lines together -- assess if model residuals are normally distributed
+#ranef <- as.data.frame(ranef((biotic_nonnative_richness_glm_poisson)))
+#ranef_intercept <- ranef$condval
+#qqnorm(ranef_intercept, main = "Quadrat ID Residuals")
+#qqline(ranef_intercept) #run 2 lines together -- assess if random effects residuals are normal
+hydro_inundation_glm_tukey <- emmeans(hydro_inundation_glm, ~ inundation_period, adjust = "tukey")
+
+
+
+
+
+```
+
